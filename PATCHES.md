@@ -4,7 +4,41 @@ Liste der lokalen Abweichungen gegenüber `upstream/main`. Bei jedem Upstream-Me
 (`git fetch upstream && git merge upstream/main`) prüfen, ob die Patches noch
 greifen, und sie sonst neu anwenden.
 
-## Patch 1: get_participants/get_full_chat gegen Telethon-Drift gehärtet (2026-08-19)
+## Patch 1: Server-CLI-Roots mit Client-MCP-Roots unionen (2026-06-05)
+
+**Datei:** `telegram_mcp/runtime.py`, Funktion `_get_effective_allowed_roots_with_status`.
+
+**Problem:** Der MCP-Server fragt den Client (z.B. Claude Code) nach dessen MCP-Roots.
+Sobald der Client welche meldet (Claude Code meldet das aktuelle Projekt-cwd),
+**ersetzte** der Upstream-Code die per CLI übergebenen `SERVER_ALLOWED_ROOTS` komplett
+(`if client_roots: return client_roots`). Dadurch war ein explizit per CLI gesetzter
+Outbox-Root (`uv run main.py /Users/.../.local/share/telegram-mcp/outbox`) faktisch
+wirkungslos: `send_file`/`send_voice` aus der Outbox lieferten
+`Path is outside allowed roots.`, weil nur das Client-cwd erlaubt war.
+
+**Fix:** Die Server-CLI-Roots werden mit den Client-Roots **unioniert** statt ersetzt:
+```python
+return _dedupe_paths(client_roots + fallback_roots), ROOTS_STATUS_READY
+```
+Dadurch bleibt die operator-konfigurierte Outbox projektübergreifend nutzbar, während
+das Client-cwd ebenfalls erlaubt bleibt. Der explizite Client-Deny-all-Pfad (leere
+Roots-Liste) bleibt **unangetastet** und wird weiter respektiert (Security-Signal).
+
+**Begründung / Security:** Der Union fügt nur die Pfade hinzu, die der Operator selbst
+explizit per CLI gesetzt hat (ein kontrollierter, leerer Staging-Ordner). Das ist exakt
+der Zweck des CLI-Args. Das Upstream-Verhalten "Client gewinnt" ist konservativer
+(Least-Privilege), widerspricht aber der expliziten Operator-Absicht beim Setzen eines
+CLI-Roots.
+
+**Test:** `tests/test_file_path_security.py::test_client_roots_union_server_allowlist`
+(ersetzt den früheren `test_client_roots_replace_server_allowlist`, der das alte
+Replace-Verhalten festschrieb). Erwartet jetzt
+`roots == [client_root, server_root]` und dass beide Roots auflösen.
+
+**Wirksam nach:** MCP-Server-Neustart (Claude Code neu starten), damit `runtime.py`
+neu geladen wird.
+
+## Patch 2: get_participants/get_full_chat gegen Telethon-Drift gehärtet (2026-08-19)
 
 **Dateien:** `telegram_mcp/tools/groups.py` (`get_participants`), `telegram_mcp/tools/chats.py`
 (`get_full_chat`).

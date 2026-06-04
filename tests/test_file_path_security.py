@@ -101,13 +101,17 @@ async def test_readable_path_rejects_outside_root(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
+async def test_client_roots_union_server_allowlist(tmp_path, monkeypatch):
+    # LOCAL PATCH (see PATCHES.md): server CLI roots are unioned with the
+    # client-advertised roots instead of being replaced by them, so an explicit
+    # operator outbox stays usable regardless of the client's cwd roots.
     server_root = (tmp_path / "server_root").resolve()
     client_root = (tmp_path / "client_root").resolve()
     server_root.mkdir(parents=True)
     client_root.mkdir(parents=True)
 
-    (server_root / "server.txt").write_text("server", encoding="utf-8")
+    server_file = server_root / "server.txt"
+    server_file.write_text("server", encoding="utf-8")
     client_file = client_root / "client.txt"
     client_file.write_text("client", encoding="utf-8")
 
@@ -115,8 +119,9 @@ async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
     ctx = _DummyContext([types.Root(uri=client_root.as_uri())])
 
     roots = await main._get_effective_allowed_roots(ctx)
-    assert roots == [client_root]
+    assert roots == [client_root, server_root]
 
+    # Both the client root and the operator-configured server root resolve.
     resolved, error = await main._resolve_readable_file_path(
         raw_path="client.txt",
         ctx=ctx,
@@ -124,6 +129,14 @@ async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
     )
     assert error is None
     assert resolved == client_file.resolve()
+
+    resolved, error = await main._resolve_readable_file_path(
+        raw_path=str(server_file),
+        ctx=ctx,
+        tool_name="send_file",
+    )
+    assert error is None
+    assert resolved == server_file.resolve()
 
 
 @pytest.mark.asyncio

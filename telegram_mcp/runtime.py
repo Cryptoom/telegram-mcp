@@ -987,9 +987,18 @@ async def _get_effective_allowed_roots_with_status(
             continue
 
     if client_roots:
-        return _dedupe_paths(client_roots), ROOTS_STATUS_READY
+        # LOCAL PATCH (see PATCHES.md): union server CLI roots with the
+        # client-advertised roots instead of letting the client roots replace
+        # them. Without this, a client that advertises MCP roots (e.g. Claude
+        # Code, which advertises the current project cwd) makes an explicit
+        # server-side allowed root such as the outbox unusable. The union keeps
+        # the operator-configured outbox usable across every project while the
+        # client cwd stays allowed too.
+        return _dedupe_paths(client_roots + fallback_roots), ROOTS_STATUS_READY
 
     # Roots API succeeded; an empty roots list is treated as explicit deny-all.
+    # We deliberately do NOT fall back to server roots here: an explicit empty
+    # client roots list is a security signal and must be honoured.
     return [], ROOTS_STATUS_CLIENT_DENY_ALL
 
 
