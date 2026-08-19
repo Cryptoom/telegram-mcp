@@ -492,6 +492,7 @@ async def resolve_username(username: str, account: str = None) -> str:
     annotations=ToolAnnotations(title="Get Full Chat", openWorldHint=True, readOnlyHint=True)
 )
 @with_account(readonly=True)
+@validate_id("chat_id")
 async def get_full_chat(chat_id: Union[int, str], account: str = None) -> str:
     """
     Get full info of a channel or group including description/about text.

@@ -240,15 +240,25 @@ async def get_participants(
         if page_size > 1000:
             return "Error: page_size cannot exceed 1000 participants per request."
 
+        # Telethon (>= 1.25) removed the offset kwarg from iter_participants, so
+        # pagination now fetches everything up to the end of the requested page
+        # and slices locally. That fetch is O(offset + page_size), not O(page_size)
+        # like the old offset-based call, so cap how deep a single request may
+        # reach to avoid pulling an unbounded number of members into memory.
+        offset = (page - 1) * page_size
+        if offset + page_size > 10000:
+            return (
+                "Error: page * page_size cannot exceed 10000 participants "
+                "(local pagination has to fetch everything up to that point)."
+            )
+
         cl = get_client(account)
         await ensure_connected(cl)
 
-        # Use iter_participants with offset to fetch only the needed slice,
-        # avoiding O(N) fetching on later pages.
-        offset = (page - 1) * page_size
         participants = []
-        async for participant in cl.iter_participants(chat_id, limit=page_size, offset=offset):
+        async for participant in cl.iter_participants(chat_id, limit=offset + page_size):
             participants.append(participant)
+        participants = participants[offset:]
 
         if not participants:
             return format_tool_result([])
