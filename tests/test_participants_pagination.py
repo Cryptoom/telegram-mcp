@@ -98,6 +98,14 @@ async def test_page_beyond_end_returns_empty(fake_client):
     assert payload["results"] == []
 
 
+@pytest.mark.asyncio
+async def test_deep_page_over_limit_is_rejected_without_fetching(fake_client):
+    result = await groups.get_participants(chat_id=-1003957110353, page=1001, page_size=10)
+    assert "cannot exceed 10000" in result
+    # Must reject before ever touching the client, otherwise the guard is worthless.
+    assert fake_client.calls == []
+
+
 def test_real_telethon_has_no_offset_kwarg():
     """Guard: the installed Telethon must not accept offset, or the local
     slicing approach would be the wrong fix. Imports Telethon only, opens
