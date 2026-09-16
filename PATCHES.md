@@ -92,3 +92,52 @@ keine Session.
 
 **Wirksam nach:** MCP-Server-Neustart (Claude Code neu starten), damit `groups.py`/`chats.py`
 neu geladen werden. NICHT in dieser Session/diesem Chip getestet, siehe Completion-Report.
+
+## Stand nach Merge 2026-09-16 (TG-01, `upstream/main` 30e4ba8, 138 Commits nachgezogen)
+
+**Patch 1 (Server-CLI-Roots-Union): aktiv, neu integriert in eine gewachsene Zielfunktion.**
+Upstream hat `_get_effective_allowed_roots_with_status` seit dem letzten Sync stark
+umgebaut: Timeout-Handling fuer `roots/list` (`TELEGRAM_ROOTS_TIMEOUT_SECONDS`), ein neuer,
+standardmaessig AUS-geschalteter Fallback-Mechanismus `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK`
+fuer den Fall, dass der Client eine LEERE Roots-Liste meldet oder `list_roots` unerwartet
+fehlschlaegt, plus mehrere neue `ROOTS_STATUS_*`-Werte. Dieser neue Fallback deckt NUR den
+leeren/fehlerhaften Fall ab, nicht unseren Fall (Client meldet nicht-leere Roots, z.B. das
+Projekt-cwd von Claude Code, aber ohne den Outbox-Pfad). Der Merge hat unseren Union-Patch im
+`if client_roots:`-Zweig unkonfliktiert uebernommen (git hat ihn als reine, additive Aenderung
+gegenueber der Basis erkannt), die eigentliche Konflikt-Stelle lag nur bei der leeren-Liste-
+Behandlung direkt darunter. Dort wurde die Upstream-Loesung (opt-in Fallback) uebernommen,
+unser alter Kommentar ("wir fallen hier bewusst NICHT zurueck") ist damit ueberholt und wurde
+durch Upstreams Kommentar ersetzt, der den neuen opt-in-Mechanismus korrekt beschreibt. Fund
+in `telegram_mcp/runtime.py`, Zeile ca. 1890-1913 nach dem Merge.
+
+**Patch 2 Fix 1 (`get_participants`-Pagination): upstream-merged, ABER unsere 10000er-
+Sicherheitsgrenze ist eine offene Entscheidung.** Upstream hat exakt dasselbe Fix-Pattern
+(`limit=offset+page_size` plus lokales Slicing) selbststaendig eingefuehrt, ohne
+unsere zusaetzliche Obergrenze `offset + page_size <= 10000`. Da unser Guard textuell VOR der
+eigentlichen Konflikt-Stelle lag (ausserhalb des Merge-Konflikts, rein additiv gegenueber der
+gemeinsamen Basis), hat der Merge ihn unveraendert beibehalten: die 10000er-Grenze ist nach
+diesem Merge weiterhin aktiv, obwohl Upstream sie nicht hat. Das war KEINE bewusste
+Entscheidung dieses Chips, sondern ein Nebenprodukt der Merge-Mechanik. Offene Frage an Olli
+im Completion-Report: Grenze beibehalten (Status quo nach diesem Merge) oder entfernen, um
+naeher an Upstream zu bleiben. `tests/test_participants_pagination.py` (inkl. Guard-Test
+gegen die real installierte Telethon-Signatur) bleibt vollstaendig gruen, unveraendert
+uebernommen, kein Anpassungsbedarf.
+
+**Patch 2 Fix 2 (`@validate_id("chat_id")` auf `get_full_chat`): aktiv, unveraendert
+uebernommen.** `chats.py` hat beim Merge KEINEN Konflikt ausgeloest (Upstream hat diese
+konkrete Zeile nicht angefasst), der Decorator steht unveraendert auf Zeile 733.
+
+**`telethon>=1.45.0`:** `uv sync` erfolgreich, `telethon==1.45.0` installiert (MTProto Layer
+229 laut Upstream-Commit `0f6253c`). Volle Testsuite (628 Tests) laeuft gruen gegen die neue
+Version, keine weiteren Signatur-Drifts jenseits der beiden bekannten Patches gefunden.
+
+**Neue Upstream-Faehigkeiten, fuer unsere Nutzung potenziell relevant** (volle Liste im
+Completion-Report `00-Index/inbox/spawn-2026-09-16-tg-01-fork-update.md`): natives
+Voice/Video-Note-Transkript-Tool (`TELEGRAM_TRANSCRIBE`, Groq- oder Telegram-Premium-Engine),
+Session-Pool fuer mehrere gleichzeitige Clients auf demselben Account
+(`TELEGRAM_SESSION_STRINGS`), Session-Lock (`TELEGRAM_SESSION_LOCK=exclusive|shared`),
+opt-in Server-Roots-Fallback (`TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK`, siehe Patch 1 oben),
+Roots-Timeout (`TELEGRAM_ROOTS_TIMEOUT_SECONDS`), Tool-Exposure-Allowlist im Read-Only-Modus
+(`TELEGRAM_EXPOSED_TOOLS=read-only+send_message,...`), Forum-Topic-Tools, Reply-Quotes in
+Message-Reads, `remove_user`-Tool fuer Gruppen (Eject ohne Bann), konfigurierbare
+Geraete-Identitaet, HTTP/SSE-Transport.
