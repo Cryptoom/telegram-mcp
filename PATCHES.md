@@ -110,16 +110,16 @@ unser alter Kommentar ("wir fallen hier bewusst NICHT zurueck") ist damit ueberh
 durch Upstreams Kommentar ersetzt, der den neuen opt-in-Mechanismus korrekt beschreibt. Fund
 in `telegram_mcp/runtime.py`, Zeile ca. 1890-1913 nach dem Merge.
 
-**Patch 2 Fix 1 (`get_participants`-Pagination): upstream-merged, ABER unsere 10000er-
-Sicherheitsgrenze ist eine offene Entscheidung.** Upstream hat exakt dasselbe Fix-Pattern
-(`limit=offset+page_size` plus lokales Slicing) selbststaendig eingefuehrt, ohne
-unsere zusaetzliche Obergrenze `offset + page_size <= 10000`. Da unser Guard textuell VOR der
-eigentlichen Konflikt-Stelle lag (ausserhalb des Merge-Konflikts, rein additiv gegenueber der
-gemeinsamen Basis), hat der Merge ihn unveraendert beibehalten: die 10000er-Grenze ist nach
-diesem Merge weiterhin aktiv, obwohl Upstream sie nicht hat. Das war KEINE bewusste
-Entscheidung dieses Chips, sondern ein Nebenprodukt der Merge-Mechanik. Offene Frage an Olli
-im Completion-Report: Grenze beibehalten (Status quo nach diesem Merge) oder entfernen, um
-naeher an Upstream zu bleiben. `tests/test_participants_pagination.py` (inkl. Guard-Test
+**Patch 2 Fix 1 (`get_participants`-Pagination): upstream-merged, unsere 10000er-
+Sicherheitsgrenze bleibt bewusst aktiv (Olli-Entscheidung 2026-09-16).** Upstream hat exakt
+dasselbe Fix-Pattern (`limit=offset+page_size` plus lokales Slicing) selbststaendig
+eingefuehrt, ohne unsere zusaetzliche Obergrenze `offset + page_size <= 10000`. Da unser Guard
+textuell VOR der eigentlichen Konflikt-Stelle lag (ausserhalb des Merge-Konflikts, rein
+additiv gegenueber der gemeinsamen Basis), hat der Merge ihn unveraendert beibehalten. Das war
+zunaechst KEIN bewusster Entscheid dieses Chips, sondern ein Nebenprodukt der Merge-Mechanik,
+die Frage ging darum als offener Punkt in den Completion-Report. Olli hat sie am 2026-09-16
+explizit entschieden: Grenze bleibt, reiner Memory-Schutz ohne Funktionsverlust im Normalfall
+(Nikolas-Gruppen sind keine Mega-Channels). `tests/test_participants_pagination.py` (inkl. Guard-Test
 gegen die real installierte Telethon-Signatur) bleibt vollstaendig gruen, unveraendert
 uebernommen, kein Anpassungsbedarf.
 
