@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,11 @@ def _synthetic_mcp():
     return server
 
 
+def test_shared_server_uses_stateless_http_transport():
+    """A service restart must not invalidate long-lived Streamable HTTP clients."""
+    assert runtime.mcp.settings.stateless_http is True
+
+
 def test_get_exposed_tools_mode_defaults_to_all(monkeypatch):
     monkeypatch.delenv("TELEGRAM_EXPOSED_TOOLS", raising=False)
 
@@ -77,6 +83,55 @@ def test_get_exposed_tools_mode_rejects_invalid_value(monkeypatch):
     assert "TELEGRAM_EXPOSED_TOOLS" in message
     assert "all" in message
     assert "read-only" in message
+
+
+def _synthetic_mcp_with_two_writes():
+    server = _synthetic_mcp()
+
+    @server.tool(annotations=ToolAnnotations(title="Send", destructiveHint=True))
+    def send_tool():
+        return "send"
+
+    return server
+
+
+def test_get_exposed_tools_mode_normalises_allowlist(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", " Read-Only+ send_tool , write_tool ")
+
+    assert runtime._get_exposed_tools_mode() == "read-only+send_tool,write_tool"
+
+
+def test_apply_exposed_tools_allowlist_keeps_named_write_tools():
+    server = _synthetic_mcp_with_two_writes()
+
+    removed = runtime._apply_exposed_tools_mode(server, "read-only+send_tool")
+
+    assert removed == ["write_tool"]
+    assert _tool_names(server) == {"read_tool", "send_tool"}
+
+
+def test_apply_exposed_tools_allowlist_rejects_unknown_tool():
+    server = _synthetic_mcp_with_two_writes()
+
+    with pytest.raises(SystemExit) as excinfo:
+        runtime._apply_exposed_tools_mode(server, "read-only+send_mesage")
+
+    assert "send_mesage" in str(excinfo.value)
+    assert _tool_names(server) == {"read_tool", "write_tool", "send_tool"}
+
+
+def test_get_exposed_tools_mode_rejects_allowlist_with_all():
+    with pytest.raises(SystemExit) as excinfo:
+        runtime._get_exposed_tools_mode("all+send_tool")
+
+    assert "read-only" in str(excinfo.value)
+
+
+def test_get_exposed_tools_mode_rejects_empty_allowlist():
+    with pytest.raises(SystemExit) as excinfo:
+        runtime._get_exposed_tools_mode("read-only+")
+
+    assert "at least one tool" in str(excinfo.value)
 
 
 def test_discover_accounts_supports_suffixed_and_default_sessions(monkeypatch):
@@ -257,6 +312,25 @@ def test_discover_accounts_passes_proxy_kwargs_to_client(monkeypatch):
     assert client.kwargs["connection"] is ConnectionTcpMTProxyRandomizedIntermediate
 
 
+def test_discover_accounts_passes_device_identity_kwargs_to_client(monkeypatch):
+    _clear_session_env(monkeypatch)
+    _clear_proxy_env(monkeypatch)
+    for key in ("TELEGRAM_DEVICE_MODEL", "TELEGRAM_SYSTEM_VERSION", "TELEGRAM_APP_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING", "default-session")
+    monkeypatch.setenv("TELEGRAM_DEVICE_MODEL", "Telegram MCP")
+    monkeypatch.setenv("TELEGRAM_APP_VERSION", "3.1")
+    monkeypatch.setattr(runtime, "TelegramClient", _FakeTelegramClient)
+    monkeypatch.setattr(runtime, "StringSession", lambda value: f"StringSession:{value}")
+
+    accounts = runtime._discover_accounts()
+
+    client = accounts["default"]
+    assert client.kwargs["device_model"] == "Telegram MCP"
+    assert client.kwargs["app_version"] == "3.1"
+    assert "system_version" not in client.kwargs
+
+
 def test_get_client_single_and_multi_account_paths(monkeypatch):
     only = object()
     monkeypatch.setattr(runtime, "clients", {"only": only})
@@ -355,6 +429,37 @@ async def test_ensure_connected_skips_recently_verified_client(monkeypatch):
     await runtime.ensure_connected(client)
 
     assert client.calls == ["is_connected"]
+
+
+class _HangingConnectClient(_ConnectivityClient):
+    async def connect(self):
+        self.calls.append("connect")
+        await asyncio.sleep(3600)
+
+
+class _DuplicatedKeyClient(_ConnectivityClient):
+    async def connect(self):
+        from telethon.errors import AuthKeyDuplicatedError
+
+        self.calls.append("connect")
+        raise AuthKeyDuplicatedError(request=None)
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_times_out_instead_of_hanging(monkeypatch):
+    client = _HangingConnectClient(connected=False, authorized=True)
+    monkeypatch.setattr(runtime, "_RECONNECT_TIMEOUT", 0.01)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await runtime._force_reconnect(client)
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_reports_burned_session(monkeypatch):
+    client = _DuplicatedKeyClient(connected=False, authorized=True)
+
+    with pytest.raises(RuntimeError, match="no longer usable"):
+        await runtime._force_reconnect(client)
 
 
 class _ResolvingClient:
@@ -610,7 +715,7 @@ def test_log_and_format_error_returns_custom_and_generated_messages(caplog):
 
     generated = runtime.log_and_format_error("get_chat", RuntimeError("boom"))
     assert "code: CHAT-ERR-" in generated
-    assert "Check mcp_errors.log" in generated
+    assert "mcp_errors.log" not in generated
 
 
 def test_path_helper_edges(tmp_path, monkeypatch):
@@ -714,11 +819,245 @@ def test_configure_allowed_roots_from_cli_updates_runtime_and_main_alias(tmp_pat
     main._configure_allowed_roots_from_cli([str(root)])
     assert main.SERVER_ALLOWED_ROOTS == [root.resolve()]
 
-    with pytest.raises(SystemExit, match="Allowed root does not exist"):
-        runtime._configure_allowed_roots_from_cli([str(tmp_path / "missing")])
+    # Fork patch: missing roots are auto-created instead of SystemExit (fixes reboot crash)
+    missing = tmp_path / "missing"
+    runtime._configure_allowed_roots_from_cli([str(missing)])
+    assert missing.exists()
+    assert runtime.SERVER_ALLOWED_ROOTS == [missing.resolve()]
 
 
 def test_main_compatibility_wrappers_are_exported():
     assert main.send_message is not None
     assert main.validate_id is runtime.validate_id
     assert main.log_file_path.endswith("mcp_errors.log")
+
+
+class _FakeRootsSession:
+    def __init__(self, roots):
+        self._roots = roots
+
+    async def list_roots(self):
+        return SimpleNamespace(roots=list(self._roots))
+
+
+def _ctx_with_roots(roots):
+    return SimpleNamespace(session=_FakeRootsSession(roots))
+
+
+def test_server_roots_fallback_enabled_parsing(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", raising=False)
+    assert runtime._server_roots_fallback_enabled() is False
+    assert runtime._server_roots_fallback_enabled("1") is True
+    assert runtime._server_roots_fallback_enabled("true") is True
+    assert runtime._server_roots_fallback_enabled("off") is False
+    monkeypatch.setenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", "yes")
+    assert runtime._server_roots_fallback_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_empty_client_roots_denies_by_default(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.delenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", raising=False)
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(_ctx_with_roots([]))
+    assert roots == []
+    assert status == runtime.ROOTS_STATUS_CLIENT_DENY_ALL
+
+
+@pytest.mark.asyncio
+async def test_empty_client_roots_falls_back_to_server_when_enabled(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.setenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", "1")
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(_ctx_with_roots([]))
+    assert roots == [root.resolve()]
+    assert status == runtime.ROOTS_STATUS_SERVER_FALLBACK
+
+    # _ensure_allowed_roots must accept the fallback roots without an error.
+    resolved, error = await runtime._ensure_allowed_roots(_ctx_with_roots([]), "download_media")
+    assert error is None
+    assert resolved == [root.resolve()]
+
+
+@pytest.mark.asyncio
+async def test_empty_client_roots_fallback_noop_without_server_roots(monkeypatch):
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [])
+    monkeypatch.setenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", "1")
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(_ctx_with_roots([]))
+    assert roots == []
+    assert status == runtime.ROOTS_STATUS_CLIENT_DENY_ALL
+
+
+class _FailingRootsSession:
+    def __init__(self, error: Exception):
+        self._error = error
+
+    async def list_roots(self):
+        raise self._error
+
+
+def _ctx_with_list_roots_error(error: Exception):
+    return SimpleNamespace(session=_FailingRootsSession(error))
+
+
+def test_coerce_paths_from_list_roots_validation_error_recovers_bare_paths(tmp_path):
+    """Cursor-style bare absolute paths appear as pydantic url_parsing inputs."""
+    from pydantic import ValidationError
+    from mcp.types import ListRootsResult
+
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+
+    with pytest.raises(ValidationError) as exc_info:
+        ListRootsResult.model_validate(
+            {
+                "roots": [
+                    {"uri": str(root_a)},
+                    {"uri": str(root_b)},
+                    {"uri": "not-a-path"},
+                ]
+            }
+        )
+
+    recovered = runtime._coerce_paths_from_list_roots_validation_error(exc_info.value)
+    assert root_a.resolve() in recovered
+    assert root_b.resolve() in recovered
+
+
+def test_coerce_paths_from_list_roots_validation_error_recovers_windows_paths():
+    """A Windows drive letter is reported as url_scheme, not url_parsing.
+
+    ``C:\\Users\\dev\\workspace`` gets far enough through pydantic's URL parsing
+    for the drive letter to be taken as the scheme, so validation fails with
+    ``url_scheme``. The path is hardcoded rather than derived from ``tmp_path``
+    so this case is exercised on POSIX CI as well as on Windows.
+    """
+    from pydantic import ValidationError
+    from mcp.types import ListRootsResult
+
+    windows_root = r"C:\Users\dev\workspace"
+
+    with pytest.raises(ValidationError) as exc_info:
+        ListRootsResult.model_validate({"roots": [{"uri": windows_root}]})
+
+    assert any(item.get("type") == "url_scheme" for item in exc_info.value.errors())
+
+    recovered = runtime._coerce_paths_from_list_roots_validation_error(exc_info.value)
+    assert recovered == [Path(windows_root).expanduser().resolve()]
+
+
+@pytest.mark.asyncio
+async def test_list_roots_validation_error_recovers_client_paths(tmp_path, monkeypatch):
+    from pydantic import ValidationError
+    from mcp.types import ListRootsResult
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [])
+    monkeypatch.delenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", raising=False)
+
+    with pytest.raises(ValidationError) as exc_info:
+        ListRootsResult.model_validate({"roots": [{"uri": str(root)}]})
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_list_roots_error(exc_info.value)
+    )
+    assert status == runtime.ROOTS_STATUS_READY
+    assert roots == [root.resolve()]
+
+    resolved, error = await runtime._ensure_allowed_roots(
+        _ctx_with_list_roots_error(exc_info.value), "download_media"
+    )
+    assert error is None
+    assert resolved == [root.resolve()]
+
+
+@pytest.mark.asyncio
+async def test_list_roots_unexpected_error_falls_back_when_opt_in(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.setenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", "1")
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_list_roots_error(RuntimeError("boom"))
+    )
+    assert status == runtime.ROOTS_STATUS_SERVER_FALLBACK
+    assert roots == [root.resolve()]
+
+
+@pytest.mark.asyncio
+async def test_list_roots_unexpected_error_denies_without_opt_in(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.delenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", raising=False)
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_list_roots_error(RuntimeError("boom"))
+    )
+    assert status == runtime.ROOTS_STATUS_ERROR
+    assert roots == []
+
+
+class _HangingRootsSession:
+    """Client that accepts roots/list but never answers it."""
+
+    async def list_roots(self):
+        await asyncio.sleep(3600)
+
+
+def _ctx_with_hanging_list_roots():
+    return SimpleNamespace(session=_HangingRootsSession())
+
+
+def test_roots_request_timeout_parsing(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ROOTS_TIMEOUT_SECONDS", raising=False)
+    assert runtime._roots_request_timeout() == runtime.ROOTS_REQUEST_TIMEOUT_DEFAULT
+    assert runtime._roots_request_timeout("2.5") == 2.5
+    assert runtime._roots_request_timeout("0") is None
+    assert runtime._roots_request_timeout("-1") is None
+    assert runtime._roots_request_timeout("nonsense") == runtime.ROOTS_REQUEST_TIMEOUT_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_list_roots_timeout_falls_back_when_opt_in(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.setenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", "1")
+    monkeypatch.setenv("TELEGRAM_ROOTS_TIMEOUT_SECONDS", "0.05")
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_hanging_list_roots()
+    )
+    assert status == runtime.ROOTS_STATUS_SERVER_FALLBACK
+    assert roots == [root.resolve()]
+
+
+@pytest.mark.asyncio
+async def test_list_roots_timeout_denies_without_opt_in(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [root.resolve()])
+    monkeypatch.delenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK", raising=False)
+    monkeypatch.setenv("TELEGRAM_ROOTS_TIMEOUT_SECONDS", "0.05")
+
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_hanging_list_roots()
+    )
+    assert status == runtime.ROOTS_STATUS_TIMEOUT
+    assert roots == []
+
+    _roots, error = await runtime._ensure_allowed_roots(
+        _ctx_with_hanging_list_roots(), "download_media"
+    )
+    assert error is not None
+    assert "roots/list" in error
