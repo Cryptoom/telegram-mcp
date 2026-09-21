@@ -141,3 +141,19 @@ Roots-Timeout (`TELEGRAM_ROOTS_TIMEOUT_SECONDS`), Tool-Exposure-Allowlist im Rea
 (`TELEGRAM_EXPOSED_TOOLS=read-only+send_message,...`), Forum-Topic-Tools, Reply-Quotes in
 Message-Reads, `remove_user`-Tool fuer Gruppen (Eject ohne Bann), konfigurierbare
 Geraete-Identitaet, HTTP/SSE-Transport.
+
+## Upstream-Merge 2026-09-21 (12 Commits, Merge-Commit `57aa52f`)
+
+Neue Upstream-Features/-Fixes: Bot-Identity-Dialogs-Fallback (#232), Forward-Result-IDs (#230),
+Groq-OGA-Audio-Transkription-Fix (#229), Windows-Install-Guard-Fix (#228), konfigurierbare
+Per-Tool-Extension-Allowlists via `TELEGRAM_FILE_EXTENSIONS` (#227), Context-Link-URLs (#225).
+
+Merge lief ohne Konflikte (`git merge upstream/main --no-edit`), Auto-Merge traf genau die 3
+patch-tragenden Dateien (`runtime.py`, `chats.py`, `groups.py`). Beide lokalen Patches nach dem
+Merge per grep verifiziert, unveraendert vorhanden:
+- Patch 1 (`_dedupe_paths(client_roots + fallback_roots)`): `runtime.py:2019`
+- Patch 2a (`iter_participants(chat_id, limit=offset + page_size)`): `groups.py:287`
+- Patch 2b (`@validate_id("chat_id")` vor `get_full_chat`): `chats.py:740`
+
+Volle Testsuite (`test_runtime.py`, `test_forward_message_routing.py`,
+`test_bot_dialogs_fallback.py`, `test_transcription.py`): 187 passed.
