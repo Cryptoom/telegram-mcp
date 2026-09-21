@@ -7,7 +7,7 @@ try:
 except UnsafeInstallationError as exc:
     raise SystemExit(str(exc)) from None
 
-from telethon.errors import AuthKeyDuplicatedError
+from telethon.errors import AuthKeyDuplicatedError, BotMethodInvalidError
 
 from telegram_mcp import runtime as _runtime
 from telegram_mcp import transcription as _transcription
@@ -170,8 +170,19 @@ async def _main() -> None:
         print("Warming entity caches (background)...", file=sys.stderr)
 
         async def _warm_caches() -> None:
+            async def _warm_client(label: str, cl: TelegramClient) -> None:
+                try:
+                    await cl.get_dialogs()
+                except BotMethodInvalidError:
+                    print(
+                        f"Skipping entity cache pre-warm for bot client '{label}' (dialogs restricted for bots).",
+                        file=sys.stderr,
+                    )
+                except Exception as exc:
+                    print(f"Entity cache warm failed for '{label}': {exc}", file=sys.stderr)
+
             try:
-                await asyncio.gather(*(cl.get_dialogs() for cl in clients.values()))
+                await asyncio.gather(*(_warm_client(label, cl) for label, cl in clients.items()))
                 print("Entity caches warmed.", file=sys.stderr)
             except Exception as warm_exc:
                 print(f"Entity cache warm failed: {warm_exc}", file=sys.stderr)
@@ -218,6 +229,12 @@ async def _main() -> None:
 
 def main() -> None:
     _configure_allowed_roots_from_cli(sys.argv[1:])
+    # Before _apply_exposed_tools_mode(): that prunes non-exposed tools from
+    # the tool manager, and the extension overrides validate tool names
+    # against that same manager. Narrowing send_file's extensions while
+    # send_file is not exposed is a valid configuration, so the name check
+    # has to see the full tool set.
+    _runtime._apply_file_extension_overrides()
     _runtime._apply_exposed_tools_mode()
     _transcription.validate_transcription_config()
     _session_lock_shared()  # fail loudly at startup on a bad toggle
