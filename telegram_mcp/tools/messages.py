@@ -1687,8 +1687,13 @@ async def _ids_outside_chat(cl, entity, message_ids: List[int]) -> List[int]:
     """
     if isinstance(entity, Channel):
         return []
-    found = await cl.get_messages(entity, ids=list(message_ids))
-    return [message_id for message_id, msg in zip(message_ids, found) if msg is None]
+    # Deduplicate first (a server may answer once per distinct ID) and fail closed on a
+    # reply of the wrong length: zip() would silently truncate and hide a foreign ID.
+    ids = list(dict.fromkeys(message_ids))
+    found = list(await cl.get_messages(entity, ids=ids))
+    if len(found) != len(ids):
+        return ids
+    return [message_id for message_id, msg in zip(ids, found) if msg is None]
 
 
 @mcp.tool(
