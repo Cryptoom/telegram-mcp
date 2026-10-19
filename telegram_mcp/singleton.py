@@ -102,7 +102,11 @@ class SessionLock:
     def __init__(self, label: str, session_identity: str, *, lock_dir: Path = DEFAULT_LOCK_DIR):
         digest = hashlib.sha256(session_identity.encode("utf-8")).hexdigest()[:16]
         lock_dir.mkdir(parents=True, exist_ok=True)
-        self.path = lock_dir / f"{label}-{digest}.lock"
+        # Keyed by the session alone: with the label in the name, renaming an
+        # account (e.g. "default" -> "work") let an old and a new process both
+        # connect the same session, each holding its own lock file.
+        # (Adapted from upstream chigwell/telegram-mcp 0485958.)
+        self.path = lock_dir / f"session-{digest}.lock"
         self._fh: Optional[IO] = None
 
     def acquire(

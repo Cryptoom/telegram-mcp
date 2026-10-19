@@ -157,3 +157,8 @@ Merge per grep verifiziert, unveraendert vorhanden:
 
 Volle Testsuite (`test_runtime.py`, `test_forward_message_routing.py`,
 `test_bot_dialogs_fallback.py`, `test_transcription.py`): 187 passed.
+
+## Upstream-Uebernahmen (2026-10-19, Branch claude/tg-t1-t2-20261019)
+
+- T1: `delete_message` und `delete_messages_bulk` loeschen nur IDs, die zum angegebenen Chat gehoeren (Upstream chigwell/telegram-mcp 11aa6d6, sinngemaess; zusaetzlich Guard fuer leere ID-Liste). Test: `tests/test_delete_chat_scope.py`.
+- T2: Timeout-Fehlertext sagt "Completion is unknown" (Upstream 5ec67f8). SessionLock-Datei nur nach Session benannt (`session-<digest>.lock`, Upstream 0485958). Folge: Prozesse mit altem Lockpfad (`<label>-<digest>.lock`) und neue Prozesse sehen sich beim Uebergang nicht, daher beim Rollout alte Prozesse vollstaendig beenden, bevor neue starten.
